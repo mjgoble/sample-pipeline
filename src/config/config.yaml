@@ -1,10 +1,10 @@
 
-projectName: &projectName test-pipeline
+projectName: &projectName sample-pipeline
 
 # used in the source step in the pipeline
 projectSource:
   repoOwner: mjgoble
-  repoName: test-pipeline
+  repoName: sample-pipeline
   repoBranch: main
 
 # environment that the pipeline stack will live in

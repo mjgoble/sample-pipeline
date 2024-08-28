@@ -62,6 +62,6 @@ const renderPipeline = (template: CloudFormationTemplate) => {
   }
 };
 
-const templateFilePath = './cdk.out/test-pipeline.template.json';
+const templateFilePath = './cdk.out/sample-pipeline.template.json';
 const template = loadTemplate(templateFilePath);
 renderPipeline(template);

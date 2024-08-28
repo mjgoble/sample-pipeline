@@ -6,7 +6,7 @@ const app = new App();
 
 const pipelineConfig = PipelineConfigLoader.loadConfig();
 
-new PipelineStack(app, 'test-pipeline', {
+new PipelineStack(app, pipelineConfig.projectName, {
   env: pipelineConfig.environment,
   pipelineConfig: pipelineConfig,
 });
