@@ -1,15 +1,9 @@
 import { App } from 'aws-cdk-lib';
-import { PipelineConfigLoader } from './config/PipelineConfigLoader';
+import { myProjectConfig } from './config/config';
 import { PipelineStack } from './stacks/Pipeline';
 
 const app = new App();
 
-const pipelineConfig = PipelineConfigLoader.loadConfig();
-
-new PipelineStack(app, pipelineConfig.projectName, {
-  env: pipelineConfig.environment,
-  pipelineConfig: pipelineConfig,
-});
-
+new PipelineStack(app, myProjectConfig.projectName, myProjectConfig);
 
 app.synth();

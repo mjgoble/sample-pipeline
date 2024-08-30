@@ -1,46 +1,41 @@
 import * as path from 'path';
-import { Stack, StackProps, Stage, Tags } from 'aws-cdk-lib';
+import { Stack, Stage, Tags } from 'aws-cdk-lib';
 import { IAction, IStage, CfnPipeline } from 'aws-cdk-lib/aws-codepipeline';
 import { CodePipeline, CodePipelineSource, ShellStep, StackSteps, ManualApprovalStep } from 'aws-cdk-lib/pipelines';
 import { Construct } from 'constructs';
 import {
-  PipelineProjectConfig,
-  PipelineProjectStackConfig,
-  PipelineProjectStageConfig,
-} from '../config/PipelineConfigLoader';
+  PipelineStackProps,
+  PipelineProjectStackProps,
+  PipelineProjectStageProps,
+  BaseStackProps,
+} from '../config/pipelineProjectConfig';
 
-interface PipelineStackProps extends StackProps {
-  pipelineConfig: PipelineProjectConfig;
-}
 
 /**
- *
  * The main pipeline stack
- *
  */
-export class PipelineStack extends Stack {
-  private projectName: string = '';
+export class PipelineStack<TStackImplementation extends BaseStackProps> extends Stack {
+  private readonly projectName: string;
 
-  constructor(scope: Construct, id: string, props: PipelineStackProps) {
+  constructor(scope: Construct, id: string, props: PipelineStackProps<TStackImplementation>) {
     super(scope, id, props);
-
-    this.projectName = props.pipelineConfig.projectName;
+    this.projectName = props.projectName;
     const synthStep = new ShellStep('Synth', {
       input: CodePipelineSource.gitHub(
-        `${props.pipelineConfig.projectSource.repoOwner}/${props.pipelineConfig.projectSource.repoName}`,
-        props.pipelineConfig.projectSource.repoBranch,
+        `${props.projectSource.repoOwner}/${props.projectSource.repoName}`,
+        props.projectSource.repoBranch,
       ),
       commands: ['npm ci', 'npm run build', 'npx cdk synth'],
     });
 
-    const pipeline = new CodePipeline(this, props.pipelineConfig.projectName, {
+    const pipeline = new CodePipeline(this, props.projectName, {
       crossAccountKeys: true,
       dockerEnabledForSynth: true,
       synth: synthStep,
     });
 
     // build the stages
-    for (const stage of props.pipelineConfig.stages) {
+    for (const stage of props.stages) {
       this.generateStage(pipeline, stage);
     }
 
@@ -48,16 +43,13 @@ export class PipelineStack extends Stack {
     pipeline.buildPipeline();
 
     // tag pipeline
-    if (props.pipelineConfig.tags) {
-      for (const [key, value] of Object.entries(props.pipelineConfig.tags)) {
+    if (props.tags) {
+      for (const [key, value] of Object.entries(props.tags)) {
         Tags.of(pipeline.pipeline.node.defaultChild as CfnPipeline).add(key, value);
       }
     }
 
-    // ensure the stacks with manual approvals have their prepare step
-    // on the same runOrder as the manual approval
     this.fixStepOrder(pipeline);
-
   }
 
   /**
@@ -67,13 +59,9 @@ export class PipelineStack extends Stack {
    * the stage
    *
    */
-  private generateStage(pipeline: CodePipeline, props: PipelineProjectStageConfig) {
+  private generateStage(pipeline: CodePipeline, props: PipelineProjectStageProps<TStackImplementation>) {
     const wave = pipeline.addWave(`${props.stageName}Wave`);
-
     const stage = new Stage(this, props.stageName);
-
-    // this is where we build stacks based on what's in props
-    // for now, a placeholder to generate some stacks
     wave.addStage(stage, { stackSteps: this.generateStacks(stage, props.stacks) });
   }
 
@@ -87,19 +75,14 @@ export class PipelineStack extends Stack {
    * this also includes the manual approval steps
    *
    */
-  private generateStacks(stage: Stage, stacks: PipelineProjectStackConfig[]): StackSteps[] {
+  private generateStacks(stage: Stage, stacks: PipelineProjectStackProps<TStackImplementation>[]): StackSteps[] {
     let stackSteps: StackSteps[] = [];
     for (const stackConfig of stacks) {
-      // build a stack using external implementation
+      const stackNameOverride = `${this.projectName}-${stage.stageName}-${stackConfig.stackName}`;
       let stack = new DynamicStack(
         stage,
         stackConfig.stackName,
-        stackConfig.implementation,
-        {
-          env: stackConfig.environment,
-          stackName: `${this.projectName}-${stage.stageName}-${stackConfig.stackName}`,
-          stackParameters: stackConfig.stackParameters,
-        },
+        { ...stackConfig.stackImplementation, stackName: stackNameOverride },
       );
 
       stackSteps.push({
@@ -159,21 +142,16 @@ export class PipelineStack extends Stack {
           const actionsToModifyRunOrder: IAction[] = this.getActionsWithPrefix(targetStepNamePrefix, stage);
 
           for (const actionToModify of actionsToModifyRunOrder) {
-            // don't modify if the action is a manual approval step
+            // we're not modifying the manual approval run order
             if (actionToModify.actionProperties.category === 'Approval') {
               continue;
             }
 
-            // get the current runOrder
             const actionCurrentRunOrder = actionToModify.actionProperties.runOrder as number;
 
-            // console.log(
-            //   `Modifying action: ${actionToModify.actionProperties.actionName}`,
-            //   `with new runOrder ${actionCurrentRunOrder - 1}`,
-            // );
-
             // use the stageIndex, actionIndex to target the action and drop the actions'
-            // runOrder by 1.
+            // runOrder by 1. this will bring the Prepare step inline with the manual approval
+            // and the deploy will still be 1 step after the manualapproval + prepare
             cfnPipeline.addPropertyOverride(
               `Stages.${stageIndex}.Actions.${actionIndex}.RunOrder`, actionCurrentRunOrder - 1,
             );
@@ -182,42 +160,36 @@ export class PipelineStack extends Stack {
       });
     });
   }
-
 }
 
-export interface DynamicStackProps extends StackProps {
-  stackParameters?: { [key: string]: any };
-}
-
+/**
+   *
+   * Loads a stack class from a file and creates an instance of it
+   *
+   * this is used for dynamically creating stacks based on an
+   * implementation defined in config
+   *
+   */
 export class DynamicStack {
   public readonly stack: Stack;
 
-  constructor(scope: Construct, id: string, implementationPath: string, props: DynamicStackProps) {
-    this.stack = this.getStackImplementation(
-      scope,
-      id,
-      implementationPath,
-      props,
-    );
+  constructor(scope: Construct, id: string, props: BaseStackProps) {
+    this.stack = this.getStackImplementation(scope, id, props);
   }
 
   private getStackImplementation(
     scope: Construct,
     id: string,
-    implementationPath: string,
-    props?: DynamicStackProps,
+    props: BaseStackProps,
   ): Stack {
-
-    const parts = implementationPath.split('.');
+    const parts = props.implementation.split('.');
     const className = parts.pop()!;
     const filePath = path.resolve(__dirname, `../../src/${parts.join('/')}`);
 
-    // TODO - don't use require() - change to async import
+    // todo - don't use require() - async import
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const module = require(filePath);
-
     const StackClass = module[className];
-
 
     return new StackClass(scope, id, props);
   }
